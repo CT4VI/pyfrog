@@ -7,6 +7,7 @@ import shlex
 import time
 import platform
 import requests
+import ssl
 from waitress import serve
 from functools import wraps
 from flask import Flask, request, jsonify
@@ -35,6 +36,7 @@ class WebServer:
         self._custom_routes = []
         self._peer_list = {}  # { ip: last_seen_timestamp }
         self._base_path = os.path.dirname(os.path.abspath(__file__))
+        self._cert_file = os.path.join(self._base_path, "certs", "cacert.pem")
 
         self.app = Flask(__name__)
 
@@ -49,6 +51,15 @@ class WebServer:
                 print("[INFO] macOS certificate fix detected — running...")
                 subprocess.run(["open", cert_script])
                 time.sleep(2)  # Give it a second to complete
+
+    def _download_with_cert_bundle(self, url, output_path):
+        import ssl
+        import urllib.request
+
+        context = ssl.create_default_context(cafile=self._cert_file)
+
+        with urllib.request.urlopen(url, context=context) as res, open(output_path, "wb") as out_file:
+            out_file.write(res.read())
 
     def _ensure_node_available(self):
         self._ensure_certificates()
@@ -86,7 +97,8 @@ class WebServer:
         archive_path = os.path.join(self._base_path, "embedded_node", "node_bundle")
 
         print(f"[INFO] Downloading Node.js from {url}")
-        urllib.request.urlretrieve(url, archive_path)
+
+        self._download_with_cert_bundle(url, archive_path)
 
         print("[INFO] Extracting...")
         if is_tar:

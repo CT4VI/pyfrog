@@ -42,6 +42,61 @@ class WebServer:
         signal.signal(signal.SIGTERM, lambda sig, frame: self.stop())
         signal.signal(signal.SIGINT, lambda sig, frame: self.stop())
 
+    def _ensure_node_available(self):
+        node_path = os.path.join(self._base_path, "embedded_node", "bin", "node")
+
+        if os.path.exists(node_path):
+            return node_path  # already available
+
+        print("[INFO] Node.js binary not found — downloading...")
+
+        import urllib.request
+        import zipfile
+        import tarfile
+
+        os.makedirs(os.path.join(self._base_path, "embedded_node"), exist_ok=True)
+
+        system = platform.system()
+        arch = platform.machine()
+
+        if system == "Darwin":
+            url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-darwin-arm64.tar.gz"
+            extract_fn = tarfile.open
+            is_tar = True
+        elif system == "Linux":
+            url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
+            extract_fn = tarfile.open
+            is_tar = True
+        elif system == "Windows":
+            url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-win-x64.zip"
+            extract_fn = zipfile.ZipFile
+            is_tar = False
+        else:
+            raise RuntimeError(f"Unsupported OS: {system}")
+
+        archive_path = os.path.join(self._base_path, "embedded_node", "node_bundle")
+
+        print(f"[INFO] Downloading Node.js from {url}")
+        urllib.request.urlretrieve(url, archive_path)
+
+        print("[INFO] Extracting...")
+        if is_tar:
+            with extract_fn(archive_path, "r:*") as tar:
+                tar.extractall(path=os.path.join(self._base_path, "embedded_node"))
+        else:
+            with extract_fn(archive_path, "r") as zip_ref:
+                zip_ref.extractall(os.path.join(self._base_path, "embedded_node"))
+
+        os.remove(archive_path)
+
+        # Final step: locate the node binary inside extracted directory
+        for root, dirs, files in os.walk(os.path.join(self._base_path, "embedded_node")):
+            for file in files:
+                if file == "node" or file == "node.exe":
+                    return os.path.join(root, file)
+
+        raise RuntimeError("Node binary not found after extraction.")
+
     def _setup_routes(self):
         @self.app.route("/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
         def default_route():
@@ -265,7 +320,7 @@ class WebServer:
         self._tunnel_pid = None
 
     def _start_tunnel(self):
-        node_path = os.path.join(self._base_path, "embedded_node/bin/node")
+        node_path = self._ensure_node_available()
         lt_script = os.path.join(self._base_path, "localtunnel/node_modules/localtunnel/bin/lt.js")
         cmd = [node_path, lt_script, "--port", str(self.port), "--subdomain", self.subdomain, "--print-requests"]
 

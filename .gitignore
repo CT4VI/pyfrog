@@ -21,3 +21,4 @@ build/
 
 # Embedded Node binary + downloads
 pyfrog/embedded_node/
+pyfrog/embedded_node/

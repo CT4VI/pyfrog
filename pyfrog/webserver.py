@@ -42,7 +42,16 @@ class WebServer:
         signal.signal(signal.SIGTERM, lambda sig, frame: self.stop())
         signal.signal(signal.SIGINT, lambda sig, frame: self.stop())
 
+    def _ensure_certificates(self):
+        if CURRENT_OS == "Darwin":
+            cert_script = "/Applications/Python 3.12/Install Certificates.command"
+            if os.path.exists(cert_script):
+                print("[INFO] macOS certificate fix detected — running...")
+                subprocess.run(["open", cert_script])
+                time.sleep(2)  # Give it a second to complete
+
     def _ensure_node_available(self):
+        self._ensure_certificates()
         node_path = os.path.join(self._base_path, "embedded_node", "bin", "node")
 
         if os.path.exists(node_path):

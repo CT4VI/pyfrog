@@ -1,0 +1,20 @@
+# Bytecode
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Log files
+*.log
+server_requests.log
+
+# Mac-specific
+.DS_Store
+
+# PyInstaller build artifacts
+dist/
+build/
+*.spec

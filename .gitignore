@@ -17,4 +17,4 @@ server_requests.log
 # PyInstaller build artifacts
 dist/
 build/
-*.spec
+*.speclocaltunnel/node_modules/

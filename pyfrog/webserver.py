@@ -53,43 +53,36 @@ class WebServer:
                 time.sleep(2)  # Give it a second to complete
 
     def _download_with_cert_bundle(self, url, output_path):
-        import ssl
-        import urllib.request
+        import requests
 
-        context = ssl.create_default_context(cafile=self._cert_file)
-
-        with urllib.request.urlopen(url, context=context) as res, open(output_path, "wb") as out_file:
-            out_file.write(res.read())
+        # Use bundled certificate for validation
+        with requests.get(url, stream=True, verify=self._cert_file) as r:
+            r.raise_for_status()
+            with open(output_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
     def _ensure_node_available(self):
-        self._ensure_certificates()
-        node_path = os.path.join(self._base_path, "embedded_node", "bin", "node")
+        import tarfile, zipfile
 
+        node_path = os.path.join(self._base_path, "embedded_node", "bin", "node")
         if os.path.exists(node_path):
-            return node_path  # already available
+            return node_path
 
         print("[INFO] Node.js binary not found — downloading...")
-
-        import urllib.request
-        import zipfile
-        import tarfile
 
         os.makedirs(os.path.join(self._base_path, "embedded_node"), exist_ok=True)
 
         system = platform.system()
-        arch = platform.machine()
 
         if system == "Darwin":
             url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-darwin-arm64.tar.gz"
-            extract_fn = tarfile.open
             is_tar = True
         elif system == "Linux":
             url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
-            extract_fn = tarfile.open
             is_tar = True
         elif system == "Windows":
             url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-win-x64.zip"
-            extract_fn = zipfile.ZipFile
             is_tar = False
         else:
             raise RuntimeError(f"Unsupported OS: {system}")
@@ -97,20 +90,18 @@ class WebServer:
         archive_path = os.path.join(self._base_path, "embedded_node", "node_bundle")
 
         print(f"[INFO] Downloading Node.js from {url}")
-
         self._download_with_cert_bundle(url, archive_path)
 
-        print("[INFO] Extracting...")
+        print("[INFO] Extracting Node.js...")
         if is_tar:
-            with extract_fn(archive_path, "r:*") as tar:
+            with tarfile.open(archive_path, "r:*") as tar:
                 tar.extractall(path=os.path.join(self._base_path, "embedded_node"))
         else:
-            with extract_fn(archive_path, "r") as zip_ref:
-                zip_ref.extractall(os.path.join(self._base_path, "embedded_node"))
+            with zipfile.ZipFile(archive_path, "r") as zip_ref:
+                zip_ref.extractall(path=os.path.join(self._base_path, "embedded_node"))
 
         os.remove(archive_path)
 
-        # Final step: locate the node binary inside extracted directory
         for root, dirs, files in os.walk(os.path.join(self._base_path, "embedded_node")):
             for file in files:
                 if file == "node" or file == "node.exe":

@@ -22,3 +22,7 @@ build/
 # Embedded Node binary + downloads
 pyfrog/embedded_node/
 pyfrog/embedded_node/
+
+# Overall Node + localtunnel architecture
+embedded_node/
+localtunnel/

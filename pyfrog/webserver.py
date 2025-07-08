@@ -8,6 +8,7 @@ import time
 import platform
 import requests
 import ssl
+import shutil
 from waitress import serve
 from functools import wraps
 from flask import Flask, request, jsonify
@@ -48,7 +49,6 @@ class WebServer:
         if CURRENT_OS == "Darwin":
             cert_script = "/Applications/Python 3.12/Install Certificates.command"
             if os.path.exists(cert_script):
-                print("[INFO] macOS certificate fix detected — running...")
                 subprocess.run(["open", cert_script])
                 time.sleep(2)  # Give it a second to complete
 
@@ -63,51 +63,42 @@ class WebServer:
                     f.write(chunk)
 
     def _ensure_node_available(self):
-        import tarfile, zipfile
+        import tarfile, urllib.request, os
 
-        node_path = os.path.join(self._base_path, "embedded_node", "bin", "node")
+        embedded_dir = os.path.join(self._base_path, "embedded_node")
+        node_path = os.path.join(embedded_dir, "bin", "node")
+
         if os.path.exists(node_path):
             return node_path
 
-        print("[INFO] Node.js binary not found — downloading...")
+        print("[INFO] Node.js not found, downloading...")
+        os.makedirs(embedded_dir, exist_ok=True)
 
-        os.makedirs(os.path.join(self._base_path, "embedded_node"), exist_ok=True)
+        url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-darwin-arm64.tar.gz"
+        archive_path = os.path.join(self._base_path, "node.tar.gz")
 
-        system = platform.system()
-
-        if system == "Darwin":
-            url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-darwin-arm64.tar.gz"
-            is_tar = True
-        elif system == "Linux":
-            url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
-            is_tar = True
-        elif system == "Windows":
-            url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-win-x64.zip"
-            is_tar = False
-        else:
-            raise RuntimeError(f"Unsupported OS: {system}")
-
-        archive_path = os.path.join(self._base_path, "embedded_node", "node_bundle")
+        import requests
+        import certifi
 
         print(f"[INFO] Downloading Node.js from {url}")
-        self._download_with_cert_bundle(url, archive_path)
+        with requests.get(url, stream=True, verify=certifi.where()) as res:
+            res.raise_for_status()
+            with open(archive_path, "wb") as f:
+                for chunk in res.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
         print("[INFO] Extracting Node.js...")
-        if is_tar:
-            with tarfile.open(archive_path, "r:*") as tar:
-                tar.extractall(path=os.path.join(self._base_path, "embedded_node"))
-        else:
-            with zipfile.ZipFile(archive_path, "r") as zip_ref:
-                zip_ref.extractall(path=os.path.join(self._base_path, "embedded_node"))
-
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(path=embedded_dir, members=self._strip_components(tar, 1))
         os.remove(archive_path)
 
-        for root, dirs, files in os.walk(os.path.join(self._base_path, "embedded_node")):
-            for file in files:
-                if file == "node" or file == "node.exe":
-                    return os.path.join(root, file)
+        return node_path
 
-        raise RuntimeError("Node binary not found after extraction.")
+    def _strip_components(self, tar, n):
+        for member in tar.getmembers():
+            path_parts = member.name.split('/')
+            member.name = '/'.join(path_parts[n:])
+            yield member
 
     def _setup_routes(self):
         @self.app.route("/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
@@ -155,8 +146,6 @@ class WebServer:
                     else:
                         status = 200
                     f.write(f"Response status: {status}\n\n")
-
-            # print("Headers:", dict(request.headers))
 
             return response
 
@@ -259,20 +248,22 @@ class WebServer:
         return False
 
     def start(self):
+        if hasattr(self, "_tunnel_process") and self._tunnel_process:
+            self._tunnel_process.terminate()
+            self._tunnel_process = None
+
         if self.migrate_host:
             role = self._auto_host_or_join()
             if role == "client":
-                # print(f"[INFO] Tunnel is already up. This device joined as a client.")
                 self._start_watcher_thread()
                 return
             else:
-                # print(f"[INFO] This device has become the host.")
                 self._is_host = True
 
         self._setup_routes()
 
         self._server_thread = threading.Thread(
-            target=lambda: serve(self.app, host="127.0.0.1", port=self.port),
+            target=lambda: serve(self.app, host="0.0.0.0", port=self.port),
             daemon=True
         )
         self._server_thread.start()
@@ -307,7 +298,6 @@ class WebServer:
                 if res.status_code != 200:
                     raise Exception("Non-200 response")
             except:
-                # print(f"[INFO] Host appears to be down — this device will now host.")
                 self._is_host = True
                 self.start()
                 break
@@ -332,21 +322,52 @@ class WebServer:
         self._tunnel_pid = None
 
     def _start_tunnel(self):
-        node_path = self._ensure_node_available()
-        lt_script = os.path.join(self._base_path, "localtunnel/node_modules/localtunnel/bin/lt.js")
-        cmd = [node_path, lt_script, "--port", str(self.port), "--subdomain", self.subdomain, "--print-requests"]
+        if hasattr(self, "_tunnel_process") and self._tunnel_process:
+            return
 
-        if CURRENT_OS == "Darwin":
-            self._start_tunnel_mac(cmd)
-        elif CURRENT_OS == "Windows":
-            self._start_tunnel_windows(cmd)
-        elif CURRENT_OS == "Linux":
-            self._start_tunnel_linux(cmd)
-        else:
-            pass
-            # print("Unsupported OS for LocalTunnel auto-launch.")
+        import subprocess
+
+        node_path = self._ensure_node_available()
+        lt_script = self._setup_localtunnel(node_path)
+
+        cmd = [
+            node_path,
+            lt_script,
+            "--port", str(self.port),
+            "--subdomain", self.subdomain,
+            "--local-host", "127.0.0.1"
+        ]
+
+        self._tunnel_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # combine both streams
+            text=True,
+            start_new_session=True
+        )
 
         self._tunnel_url = f"https://{self.subdomain}.loca.lt"
+
+    def _setup_localtunnel(self, node_path):
+        import os
+        import subprocess
+
+        lt_dir = os.path.join(self._base_path, "localtunnel")
+        os.makedirs(lt_dir, exist_ok=True)
+
+        npm_path = os.path.join(os.path.dirname(node_path), "npm")
+        package_json = os.path.join(lt_dir, "package.json")
+
+        if not os.path.exists(package_json):
+            print("[INFO] Initializing localtunnel directory...")
+            subprocess.run([node_path, npm_path, "init", "-y"], cwd=lt_dir)
+
+        lt_module = os.path.join(lt_dir, "node_modules", "localtunnel")
+        if not os.path.exists(lt_module):
+            print("[INFO] Installing localtunnel...")
+            subprocess.run([node_path, npm_path, "install", "localtunnel"], cwd=lt_dir)
+
+        return os.path.join(lt_module, "bin", "lt.js")
 
     def _start_tunnel_mac(self, cmd):
         quoted_cmd = " ".join(shlex.quote(c) for c in cmd)

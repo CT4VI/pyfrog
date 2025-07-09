@@ -71,3 +71,8 @@ Once you're happy with your behaviours, you may start your server with `myserver
 - `server.is_host()`: A boolean reflecting if you're the host of the server
 - `server.get_peers()`: A list of the current peers trying to reach the server
 - `server.tunnel_url()`: The current URL of the local tunnel
+
+## Comes with
+- The PyFrog module
+- A built in project level auto-installer for Node.js
+- An example program showcasing the main functions of the module

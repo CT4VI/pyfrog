@@ -45,6 +45,235 @@ class WebServer:
         signal.signal(signal.SIGTERM, lambda sig, frame: self.stop())
         signal.signal(signal.SIGINT, lambda sig, frame: self.stop())
 
+    def start(self):
+        # Kill any existing tunnel processes
+        if hasattr(self, "_tunnel_process") and self._tunnel_process:
+            self._tunnel_process.terminate()
+            self._tunnel_process = None
+
+        # If migrate_host is true, check whether the subdomain is already live and depending on the response, start the watcher thread
+        if self.migrate_host:
+            role = self._auto_host_or_join()
+            if role == "client":
+                self._start_watcher_thread()
+                return
+            else:
+                self._is_host = True
+
+        # Inject internal system routes just like user-defined ones
+        self._any_hooks.append((
+            "/status",
+            ["GET"],
+            lambda data, request_obj=None: {
+                "status": "online",
+                "peers": list(self._peer_list)
+            }
+        ))
+
+        self._any_hooks.append((
+            "/register",
+            ["POST"],
+            self._create_register_hook()
+        ))
+
+        self._setup_routes()
+
+        self._server_thread = threading.Thread(
+            target=lambda: serve(self.app, host="0.0.0.0", port=self.port),
+            daemon=True
+        )
+        self._server_thread.start()
+
+        # Wait for Flask to bind
+        if self._wait_for_port():
+            self._start_tunnel()
+        else:
+            print("[ERROR] Failed to start tunnel: Flask server did not become ready.")
+            return
+
+        self._start_tunnel()
+
+        if self.auto_hold:
+            self._hold_thread = threading.Thread(target=self._hold_forever)
+            self._hold_thread.start()
+
+    def _create_register_hook(self):
+        def register(data, request_obj=None):
+            ip = data.get("ip") or (request_obj.remote_addr if request_obj else "unknown")
+            self._peer_list[ip] = time.time()
+            self._prune_stale_peers()
+            return {"peers": list(self._peer_list)}
+
+        return register
+
+    def _auto_host_or_join(self):
+        try: # Ping the server subdomain. If a response is received, send the ip to the registration route and return client status
+            response = requests.get(f"https://{self.subdomain}.loca.lt/status", timeout=2)
+            if response.status_code == 200:
+                local_ip = self._get_local_ip()
+                requests.post(f"https://{self.subdomain}.loca.lt/register", json={"ip": local_ip})
+                return "client"
+        except: # If no response is received, subdomain isn't up. Return host status
+            return "host"
+
+    def _get_local_ip(self):
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try: # Connect to public Google DNS. From this connection, extract the IP
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        except: # If no IP is found, default to the local host
+            return "127.0.0.1"
+        finally: # Once finished, close the Google DNS
+            s.close()
+
+    def _start_watcher_thread(self):
+        # If the watcher thread is already live, skip the function
+        if self._watcher_thread and self._watcher_thread.is_alive():
+            return
+
+        # If it isn't, begin monitoring the host
+        self._watcher_thread = threading.Thread(target=self._monitor_host, daemon=True)
+        self._watcher_thread.start()
+
+    def _monitor_host(self):
+        while not self._is_host:
+            try: # If not the host, ping the server over and over
+                local_ip = self._get_local_ip()
+                requests.post(f"https://{self.subdomain}.loca.lt/register", json={"ip": local_ip}, timeout=2)
+                res = requests.get(f"https://{self.subdomain}.loca.lt/status", timeout=2)
+
+                if res.status_code != 200:
+                    raise Exception("Non-200 response")
+            except: # If the ping fails, then retry starting the server
+                self._is_host = True
+                self.start()
+                break
+            time.sleep(self._role_check_interval) # Wait a duration determined by the role check interval before checking again
+
+    def _setup_routes(self):
+        @self.app.route("/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) # For all actions happening not defined in the user script
+        def default_route():
+            # Record the method of the request and all information regarding it
+            method = request.method
+            data = self._extract_request_data()
+
+            # To a given log file, record all details of the request
+            if self._log_requests:
+                with open(self._log_file, "a") as f:
+                    f.write(f"[{time.ctime()}] {method} {request.path}\n")
+                    f.write(f"Headers: {dict(request.headers)}\n")
+                    f.write(f"Data: {data}\n")
+
+            # Attempt to tell the user that no route is supported for their request
+            try:
+                if method == "GET":
+                    for hook in self._get_hooks:
+                        response = jsonify(hook(data, request_obj=request))
+                        break
+                    else:
+                        response = "No GET handler", 400
+
+                elif method == "POST":
+                    for hook in self._post_hooks:
+                        response = jsonify(hook(data, request_obj=request))
+                        break
+                    else:
+                        response = "No POST handler", 400
+
+                else:
+                    for methods, hook in self._any_hooks:
+                        if method in methods:
+                            response = jsonify(hook(data, request_obj=request))
+                            break
+                    else:
+                        response = f"Method {method} not supported here", 405
+
+            # Throw an error 500 if the server couldn't communicate with the requester
+            except Exception as e:
+                response = {"error": str(e)}, 500
+
+            # Attempt to append the status of the response to the log file
+            if self._log_requests:
+                with open(self._log_file, "a") as f:
+                    if isinstance(response, tuple):
+                        status = response[1]
+                    else:
+                        status = 200
+                    f.write(f"Response status: {status}\n\n")
+
+            return response
+
+        # Flag and redirect if the request comes through on a custom route
+        for path, methods, func in self._custom_routes:
+            @wraps(func)
+            def handler(*args, _func=func, **kwargs):
+                result = _func(*args, **kwargs)
+
+                # If user returns dict, jsonify it. Otherwise return as-is (HTML, text, etc.)
+                if isinstance(result, dict):
+                    return jsonify(result)
+                else:
+                    return result
+
+            self.app.route(path, methods=methods)(handler)
+
+        for path, methods, func in self._any_hooks:
+            @wraps(func)
+            def route_wrapper(*args, _func=func, **kwargs):
+                data = self._extract_request_data()
+
+                if self._log_requests:
+                    with open(self._log_file, "a") as f:
+                        f.write(f"[{time.ctime()}] {request.method} {request.path}\n")
+                        f.write(f"Headers: {dict(request.headers)}\n")
+                        f.write(f"Data: {data}\n")
+
+                try:
+                    result = jsonify(_func(data, request_obj=request))
+                    status = 200
+                except Exception as e:
+                    result = jsonify({"error": str(e)})
+                    status = 500
+
+                if self._log_requests:
+                    with open(self._log_file, "a") as f:
+                        f.write(f"Response status: {status}\n\n")
+
+                return result, status
+
+            self.app.route(path, methods=methods)(route_wrapper)
+
+    def _extract_request_data(self):
+        result = {} # Create a dictionary to store request data
+
+        # Decode all data from the request
+        if request.method == "GET":
+            result.update(request.args.to_dict())
+            result["query"] = request.query_string.decode()
+
+        else:
+            content_type = request.content_type or ""
+            if "application/json" in content_type:
+                result.update(request.get_json(force=True, silent=True) or {})
+            elif "application/x-www-form-urlencoded" in content_type:
+                result.update(request.form.to_dict())
+            elif "multipart/form-data" in content_type:
+                result.update(request.form.to_dict(flat=True))
+            elif "text/plain" in content_type:
+                result["text"] = request.get_data(as_text=True)
+            else:
+                result["raw"] = request.get_data()
+
+        # Add headers from the request to the stored data
+        headers = dict(request.headers)
+        result["headers"] = headers
+
+        # Add client IP to the stored data
+        result["ip"] = headers.get("X-Forwarded-For", request.remote_addr)
+
+        return result
+
     def _ensure_certificates(self):
         if CURRENT_OS == "Darwin":
             cert_script = "/Applications/Python 3.12/Install Certificates.command"
@@ -100,111 +329,6 @@ class WebServer:
             member.name = '/'.join(path_parts[n:])
             yield member
 
-    def _setup_routes(self):
-        @self.app.route("/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-        def default_route():
-            method = request.method
-            data = self._extract_request_data()
-
-            # Logging
-            if self._log_requests:
-                with open(self._log_file, "a") as f:
-                    f.write(f"[{time.ctime()}] {method} {request.path}\n")
-                    f.write(f"Headers: {dict(request.headers)}\n")
-                    f.write(f"Data: {data}\n")
-
-            try:
-                if method == "GET":
-                    for hook in self._get_hooks:
-                        response = jsonify(hook(data, request_obj=request))
-                        break
-                    else:
-                        response = "No GET handler", 400
-
-                elif method == "POST":
-                    for hook in self._post_hooks:
-                        response = jsonify(hook(data, request_obj=request))
-                        break
-                    else:
-                        response = "No POST handler", 400
-
-                else:
-                    for methods, hook in self._any_hooks:
-                        if method in methods:
-                            response = jsonify(hook(data, request_obj=request))
-                            break
-                    else:
-                        response = f"Method {method} not supported here", 405
-
-            except Exception as e:
-                response = {"error": str(e)}, 500
-
-            if self._log_requests:
-                with open(self._log_file, "a") as f:
-                    if isinstance(response, tuple):
-                        status = response[1]
-                    else:
-                        status = 200
-                    f.write(f"Response status: {status}\n\n")
-
-            return response
-
-        for path, methods, func in self._custom_routes:
-            @wraps(func)
-            def handler(*args, _func=func, **kwargs):
-                result = _func(*args, **kwargs)
-
-                # If user returns dict, jsonify it. Otherwise return as-is (HTML, text, etc.)
-                if isinstance(result, dict):
-                    return jsonify(result)
-                else:
-                    return result
-
-            self.app.route(path, methods=methods)(handler)
-
-        for path, methods, func in self._any_hooks:
-            @wraps(func)
-            def route_wrapper(*args, _func=func, **kwargs):
-                data = self._extract_request_data()
-
-                if self._log_requests:
-                    with open(self._log_file, "a") as f:
-                        f.write(f"[{time.ctime()}] {request.method} {request.path}\n")
-                        f.write(f"Headers: {dict(request.headers)}\n")
-                        f.write(f"Data: {data}\n")
-
-                try:
-                    result = jsonify(_func(data, request_obj=request))
-                    status = 200
-                except Exception as e:
-                    result = jsonify({"error": str(e)})
-                    status = 500
-
-                if self._log_requests:
-                    with open(self._log_file, "a") as f:
-                        f.write(f"Response status: {status}\n\n")
-
-                return result, status
-
-            self.app.route(path, methods=methods)(route_wrapper)
-
-        @self.on_get
-        def status(data, request_obj=None):
-            self._prune_stale_peers()
-            return {"status": "online", "peers": list(self._peer_list)}
-
-        @self.on_request(path="/register", methods=["POST"])
-        def register_peer(data, request_obj=None):
-            ip = data.get("ip") or request_obj.remote_addr
-            now = time.time()
-
-            self._peer_list[ip] = now
-
-            # Clean out stale peers
-            self._prune_stale_peers(now)
-
-            return {"peers": list(self._peer_list)}
-
     def _prune_stale_peers(self, now=None):
         now = now or time.time()
         expired = []
@@ -246,62 +370,6 @@ class WebServer:
                     return True
             time.sleep(0.1)
         return False
-
-    def start(self):
-        if hasattr(self, "_tunnel_process") and self._tunnel_process:
-            self._tunnel_process.terminate()
-            self._tunnel_process = None
-
-        if self.migrate_host:
-            role = self._auto_host_or_join()
-            if role == "client":
-                self._start_watcher_thread()
-                return
-            else:
-                self._is_host = True
-
-        self._setup_routes()
-
-        self._server_thread = threading.Thread(
-            target=lambda: serve(self.app, host="0.0.0.0", port=self.port),
-            daemon=True
-        )
-        self._server_thread.start()
-
-        # Wait for Flask to bind
-        if self._wait_for_port():
-            self._start_tunnel()
-        else:
-            print("[ERROR] Failed to start tunnel: Flask server did not become ready.")
-            return
-
-        self._start_tunnel()
-
-        if self.auto_hold:
-            self._hold_thread = threading.Thread(target=self._hold_forever)
-            self._hold_thread.start()
-
-    def _start_watcher_thread(self):
-        if self._watcher_thread and self._watcher_thread.is_alive():
-            return  # Already running
-
-        self._watcher_thread = threading.Thread(target=self._monitor_host, daemon=True)
-        self._watcher_thread.start()
-
-    def _monitor_host(self):
-        while not self._is_host:
-            try:
-                local_ip = self._get_local_ip()
-                requests.post(f"https://{self.subdomain}.loca.lt/register", json={"ip": local_ip}, timeout=2)
-                res = requests.get(f"https://{self.subdomain}.loca.lt/status", timeout=2)
-
-                if res.status_code != 200:
-                    raise Exception("Non-200 response")
-            except:
-                self._is_host = True
-                self.start()
-                break
-            time.sleep(self._role_check_interval)
 
     def is_host(self):
         return self._is_host
@@ -412,57 +480,6 @@ class WebServer:
         else:
             # Fallback: run in background
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def _extract_request_data(self):
-        result = {}
-
-        if request.method == "GET":
-            result.update(request.args.to_dict())
-            result["query"] = request.query_string.decode()
-
-        else:
-            content_type = request.content_type or ""
-            if "application/json" in content_type:
-                result.update(request.get_json(force=True, silent=True) or {})
-            elif "application/x-www-form-urlencoded" in content_type:
-                result.update(request.form.to_dict())
-            elif "multipart/form-data" in content_type:
-                result.update(request.form.to_dict(flat=True))
-            elif "text/plain" in content_type:
-                result["text"] = request.get_data(as_text=True)
-            else:
-                result["raw"] = request.get_data()
-
-        headers = dict(request.headers)
-        result["headers"] = headers
-
-        # Extract client IP (prefer public IP from headers)
-        result["ip"] = headers.get("X-Forwarded-For", request.remote_addr)
-
-        return result
-
-    def _auto_host_or_join(self):
-        try:
-            response = requests.get(f"https://{self.subdomain}.loca.lt/status", timeout=2)
-            if response.status_code == 200:
-                # Server is already up, try to register as peer
-                local_ip = self._get_local_ip()
-                requests.post(f"https://{self.subdomain}.loca.lt/register", json={"ip": local_ip})
-                return "client"
-        except:
-            # Tunnel is unreachable, we will host it
-            return "host"
-
-    def _get_local_ip(self):
-        import socket
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-        except:
-            return "127.0.0.1"
-        finally:
-            s.close()
 
     def get_peers(self):
         self._prune_stale_peers()

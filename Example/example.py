@@ -1,7 +1,6 @@
-from pyfrog import WebServer
-import time
+import pyfrog
 
-server = WebServer(port=5000, subdomain="myserver", migrate_host=True, auto_hold=False)
+server = pyfrog.WebServer(port=5000, subdomain="myserver", migrate_host=True, auto_hold=False)
 
 # When set to True, migrate_host will cause the server to both accept and join queues to host domains
 # auto_hold will keep the server running endlessly in the background. Setting this to false will require you to keep the program alive
@@ -53,7 +52,6 @@ def handle_upload(data, request_obj=None):
     return {"status": "uploaded"}
 
 server.start()
-time.sleep(1)
 
 # Gives the server a moment to connect
 

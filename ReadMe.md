@@ -1,6 +1,8 @@
 # PyFrog for Mac - I just like frogs. I'm a frog guy.
 PyFrog is a python library designed to make the process of exposing local servers to the internet through a local tunnel extremely easy. Like a magic key that opens doors between realms.
 
+In layperson's terms, this lets you simulate a web server via Flask and Localtunnel, meaning your code gets a publically available custom URL accessible from anywhere in the world. If multiple devices try to host the same URL, then they will be added to a list of "peers". If the host goes down due for any reason, one of the peers will take over and begin executing its code throught the URL instead. Each peer under the URL is also able to communicate with each other directly through the IP address of each device on the network. As a result, this lets you create networks of programs communicating across the planet that are fully compatible with most other cloud software due to the public URL.
+
 ## Requirements
 - Python 3.7+
 - Internet access

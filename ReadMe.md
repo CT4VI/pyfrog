@@ -44,7 +44,7 @@ def myotherfunction(data, request_obj):
   Put whatever you want your code to do on a post request here
 ```
 
-`data` is the JSON data sent with the request, whilst `request_obj` is lower level data. If you don't need this extra data, simply replace it with `request_obj=None` in the function.
+`data` is the JSON data sent with the request, whilst `request_obj` is lower level data. If you don't need this extra data, simply replace it with `request_obj=None` in the function. One thing to note is that /status and /register are both used internally to make the host migration system work. As such, it isn't advised to try using them yourself due to the high probability of things not working properly if you do.
 
 Should you wish to make use of custom routes, like https://myserver.loca.lt/echo, then you will need to add these behaviours in a similar way, such as
 

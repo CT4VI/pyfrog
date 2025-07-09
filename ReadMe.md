@@ -6,10 +6,9 @@ PyFrog is a python library designed to make the process of exposing local server
 - Internet access
 
 ## Installation
-Run the following bash scripts in the folder of the project that you want to import pyfrog into
+Run the following bash script in the folder of the project that you want to import pyfrog into
 ```
 git clone https://github.com/CT4VI/pyfrog.git
-cd pyfrog
 ```
 
 ## Usage

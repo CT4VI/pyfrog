@@ -303,7 +303,7 @@ class WebServer:
         print("[INFO] Node.js not found, downloading...")
         os.makedirs(embedded_dir, exist_ok=True)
 
-        url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-darwin-arm64.tar.gz"
+        url = self._get_nodejs_download_url()
         archive_path = os.path.join(self._base_path, "node.tar.gz")
 
         import requests
@@ -317,11 +317,35 @@ class WebServer:
                     f.write(chunk)
 
         print("[INFO] Extracting Node.js...")
-        with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(path=embedded_dir, members=self._strip_components(tar, 1))
+        if archive_path.endswith(".zip"):
+            import zipfile
+            with zipfile.ZipFile(archive_path, "r") as zip_ref:
+                zip_ref.extractall(path=embedded_dir)
+        else:
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=embedded_dir, members=self._strip_components(tar, 1))
         os.remove(archive_path)
 
         return node_path
+
+    def _get_nodejs_download_url(self):
+        version = "v20.11.1"
+        base_url = f"https://nodejs.org/dist/{version}/"
+
+        arch = platform.machine()
+        if arch in ("x86_64", "AMD64"):
+            arch = "x64"
+        elif arch in ("arm64", "aarch64"):
+            arch = "arm64"
+
+        if CURRENT_OS == "Darwin":
+            return base_url + f"node-{version}-darwin-{arch}.tar.gz"
+        elif CURRENT_OS == "Linux":
+            return base_url + f"node-{version}-linux-{arch}.tar.gz"
+        elif CURRENT_OS == "Windows":
+            return base_url + f"node-{version}-win-{arch}.zip"
+        else:
+            raise OSError("Unsupported OS for Node.js auto-installation")
 
     def _strip_components(self, tar, n):
         for member in tar.getmembers():
@@ -406,13 +430,14 @@ class WebServer:
             "--local-host", "127.0.0.1"
         ]
 
-        self._tunnel_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # combine both streams
-            text=True,
-            start_new_session=True
-        )
+        if CURRENT_OS == "Darwin":
+            self._start_tunnel_mac(cmd)
+        elif CURRENT_OS == "Windows":
+            self._start_tunnel_windows(cmd)
+        elif CURRENT_OS == "Linux":
+            self._start_tunnel_linux(cmd)
+        else:
+            raise OSError("Unsupported OS")
 
         self._tunnel_url = f"https://{self.subdomain}.loca.lt"
 
@@ -435,7 +460,10 @@ class WebServer:
             print("[INFO] Installing localtunnel...")
             subprocess.run([node_path, npm_path, "install", "localtunnel"], cwd=lt_dir)
 
-        return os.path.join(lt_module, "bin", "lt.js")
+        lt_bin = os.path.join(lt_module, "bin", "lt.js")
+        if CURRENT_OS == "Windows":
+            lt_bin = os.path.join(lt_module, "bin", "lt.cmd")  # fallback or adjustment if needed
+        return lt_bin
 
     def _start_tunnel_mac(self, cmd):
         quoted_cmd = " ".join(shlex.quote(c) for c in cmd)

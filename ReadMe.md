@@ -8,7 +8,7 @@ In layperson's terms, this lets you simulate a web server via Flask and Localtun
 - Internet access
 
 ## Installation
-Run the following gi command in the folder of the project that you want to import pyfrog into
+Run the following git command in the folder of the project that you want to import pyfrog into
 ```
 git clone https://github.com/CT4VI/pyfrog.git
 ```

@@ -406,12 +406,15 @@ class WebServer:
             self.stop()
 
     def stop(self):
+        self._close_mac_tunnel_windows()
         if self._tunnel_pid:
             try:
                 os.kill(self._tunnel_pid, signal.SIGTERM)
             except Exception:
                 pass
         self._tunnel_pid = None
+        if CURRENT_OS == "Darwin":
+            subprocess.run(["pkill", "-f", "lt.js"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _start_tunnel(self):
         if hasattr(self, "_tunnel_process") and self._tunnel_process:
@@ -465,24 +468,43 @@ class WebServer:
             lt_bin = os.path.join(lt_module, "bin", "lt.cmd")  # fallback or adjustment if needed
         return lt_bin
 
-    def _start_tunnel_mac(self, cmd):
-        quoted_cmd = " ".join(shlex.quote(c) for c in cmd)
-        applescript = f'''
+    def _close_mac_tunnel_windows(self):
+        script = '''
         tell application "Terminal"
-            set windowExists to false
             repeat with w in windows
-                if name of w contains "Tunnel" then
-                    set windowExists to true
-                    do script "{quoted_cmd}" in w
-                    exit repeat
-                end if
+                try
+                    if custom title of w contains "PyFrogTunnel" then
+                        close w
+                    end if
+                end try
             end repeat
-            if not windowExists then
-                set t to do script "{quoted_cmd}"
-                set custom title of front window to "Tunnel"
-            end if
         end tell
         '''
+        subprocess.run(["osascript", "-e", script])
+
+    def _start_tunnel_mac(self, cmd):
+        subprocess.run(["defaults", "write", "com.apple.Terminal", "NSQuitAlwaysKeepsWindows", "-bool", "false"])
+        self._close_mac_tunnel_windows()
+        quoted_cmd = " ".join(shlex.quote(c) for c in cmd)
+        applescript = f'''
+            tell application "Terminal"
+                set found to false
+                repeat with w in windows
+                    if name of w contains "Tunnel" then
+                        set found to true
+                        tell w
+                            do script "echo Killing any previous tunnel...; pkill -f 'lt.js'; sleep 1; clear; {quoted_cmd}" in selected tab
+                        end tell
+                        exit repeat
+                    end if
+                end repeat
+
+                if not found then
+                    set t to do script "echo Launching fresh tunnel...; pkill -f 'lt.js'; sleep 1; clear; {quoted_cmd}"
+                    set custom title of front window to "Tunnel"
+                end if
+            end tell
+            '''
         subprocess.run(["osascript", "-e", applescript])
 
     def _start_tunnel_windows(self, cmd):

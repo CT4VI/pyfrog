@@ -91,8 +91,6 @@ class WebServer:
             print("[ERROR] Failed to start tunnel: Flask server did not become ready.")
             return
 
-        self._start_tunnel()
-
         if self.auto_hold:
             self._hold_thread = threading.Thread(target=self._hold_forever)
             self._hold_thread.start()
@@ -488,19 +486,16 @@ class WebServer:
         quoted_cmd = " ".join(shlex.quote(c) for c in cmd)
         applescript = f'''
             tell application "Terminal"
-                set found to false
+                set windowExists to false
                 repeat with w in windows
                     if name of w contains "Tunnel" then
-                        set found to true
-                        tell w
-                            do script "echo Killing any previous tunnel...; pkill -f 'lt.js'; sleep 1; clear; {quoted_cmd}" in selected tab
-                        end tell
+                        set windowExists to true
+                        do script "clear && {quoted_cmd}" in w
                         exit repeat
                     end if
                 end repeat
-
-                if not found then
-                    set t to do script "echo Launching fresh tunnel...; pkill -f 'lt.js'; sleep 1; clear; {quoted_cmd}"
+                if not windowExists then
+                    set t to do script "{quoted_cmd}"
                     set custom title of front window to "Tunnel"
                 end if
             end tell

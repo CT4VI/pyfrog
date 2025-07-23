@@ -408,21 +408,34 @@ class WebServer:
     def stop(self):
         print("[INFO] Stopping PyFrog WebServer...")
         
-        # Close tunnel windows on Mac
-        self._close_mac_tunnel_windows()
-        
-        # Kill tunnel process if running
+        # First kill tunnel process if running
         if self._tunnel_pid:
             try:
                 print(f"[INFO] Terminating tunnel process {self._tunnel_pid}")
                 os.kill(self._tunnel_pid, signal.SIGTERM)
+                time.sleep(0.5)  # Give it time to terminate
+                # If still running, force kill
+                try:
+                    os.kill(self._tunnel_pid, signal.SIGKILL)
+                except:
+                    pass  # Process already dead
             except Exception as e:
                 print(f"[WARNING] Could not kill tunnel process: {e}")
         self._tunnel_pid = None
         
-        # Kill any remaining localtunnel processes
+        # Kill any remaining localtunnel and node processes more aggressively
         if CURRENT_OS == "Darwin":
             subprocess.run(["pkill", "-f", "lt.js"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-f", "localtunnel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Kill any node processes that might be running our subdomain
+            subprocess.run(["pkill", "-f", f"--subdomain {self.subdomain}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Wait for processes to fully terminate before closing terminal windows
+            print("[INFO] Waiting for processes to fully terminate...")
+            time.sleep(2)
+            
+            # Now close tunnel windows on Mac after processes have died
+            self._close_mac_tunnel_windows()
         
         print("[INFO] PyFrog WebServer stopped.")
 
@@ -479,18 +492,19 @@ class WebServer:
         return lt_bin
 
     def _close_mac_tunnel_windows(self):
+        # Close windows with either title pattern
         script = '''
         tell application "Terminal"
             repeat with w in windows
                 try
-                    if custom title of w contains "PyFrogTunnel" then
+                    if (custom title of w contains "PyFrogTunnel") or (custom title of w contains "Tunnel") then
                         close w
                     end if
                 end try
             end repeat
         end tell
         '''
-        subprocess.run(["osascript", "-e", script])
+        subprocess.run(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _start_tunnel_mac(self, cmd):
         subprocess.run(["defaults", "write", "com.apple.Terminal", "NSQuitAlwaysKeepsWindows", "-bool", "false"])

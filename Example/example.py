@@ -1,4 +1,6 @@
-server = PyFrog.WebServer(port=8081, subdomain="migrationtest", migrate_host=True, auto_hold=False)
+from PyFrog import WebServer
+
+server = WebServer(port=8081, subdomain="migrationtest", migrate_host=True, auto_hold=False)
 
 # When set to True, migrate_host will cause the server to both accept and join queues to host domains
 # auto_hold will keep the server running endlessly in the background. Setting this to false will require you to keep the program alive

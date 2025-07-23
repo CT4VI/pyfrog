@@ -91,10 +91,10 @@ class WebServer:
             print("[ERROR] Failed to start tunnel: Flask server did not become ready.")
             return
 
-        self._start_tunnel()
+
 
         if self.auto_hold:
-            self._hold_thread = threading.Thread(target=self._hold_forever)
+            self._hold_thread = threading.Thread(target=self._hold_forever, daemon=True)
             self._hold_thread.start()
 
     def _create_register_hook(self):
@@ -406,15 +406,25 @@ class WebServer:
             self.stop()
 
     def stop(self):
+        print("[INFO] Stopping PyFrog WebServer...")
+        
+        # Close tunnel windows on Mac
         self._close_mac_tunnel_windows()
+        
+        # Kill tunnel process if running
         if self._tunnel_pid:
             try:
+                print(f"[INFO] Terminating tunnel process {self._tunnel_pid}")
                 os.kill(self._tunnel_pid, signal.SIGTERM)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARNING] Could not kill tunnel process: {e}")
         self._tunnel_pid = None
+        
+        # Kill any remaining localtunnel processes
         if CURRENT_OS == "Darwin":
             subprocess.run(["pkill", "-f", "lt.js"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        print("[INFO] PyFrog WebServer stopped.")
 
     def _start_tunnel(self):
         if hasattr(self, "_tunnel_process") and self._tunnel_process:

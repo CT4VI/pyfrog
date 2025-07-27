@@ -299,63 +299,39 @@ class WebServer:
                     f.write(chunk)
 
     def _ensure_node_available(self):
-        import tarfile, zipfile, urllib.request
+        import tarfile, zipfile
+
         embedded_dir = os.path.join(self._base_path, "embedded_node")
-        node_path = None
+        node_path = os.path.join(embedded_dir, "bin", "node") if CURRENT_OS != "Windows" else os.path.join(embedded_dir, "node.exe")
 
-        if CURRENT_OS == "Windows":
-            node_exe = "node.exe"
-        else:
-            node_exe = "node"
-
-        # Skip if node already extracted
-        for root, _, files in os.walk(embedded_dir):
-            if node_exe in files:
-                node_path = os.path.join(root, node_exe)
-                break
-
-        if node_path:
-            npm_path = self._find_npm_path(embedded_dir)
-            return node_path, npm_path
+        if os.path.exists(node_path):
+            return node_path
 
         print("[INFO] Node.js not found, downloading...")
         os.makedirs(embedded_dir, exist_ok=True)
 
         url = self._get_nodejs_download_url()
-        archive_path = os.path.join(self._base_path, "node_archive")
+        archive_ext = ".zip" if url.endswith(".zip") else ".tar.gz"
+        archive_path = os.path.join(self._base_path, f"node{archive_ext}")
 
-        import requests, certifi
         print(f"[INFO] Downloading Node.js from {url}")
-        with requests.get(url, stream=True, verify=certifi.where()) as res:
+        with requests.get(url, stream=True, verify=self._cert_file) as res:
             res.raise_for_status()
             with open(archive_path, "wb") as f:
                 for chunk in res.iter_content(chunk_size=8192):
                     f.write(chunk)
 
         print("[INFO] Extracting Node.js...")
-        if archive_path.endswith(".zip"):
+        if archive_ext == ".zip":
             with zipfile.ZipFile(archive_path, "r") as zip_ref:
-                zip_ref.extractall(embedded_dir)
+                zip_ref.extractall(path=embedded_dir)
         else:
             with tarfile.open(archive_path, "r:gz") as tar:
                 tar.extractall(path=embedded_dir, members=self._strip_components(tar, 1))
+
         os.remove(archive_path)
 
-        # Re-locate node and npm
-        node_path = None
-        for root, _, files in os.walk(embedded_dir):
-            if node_exe in files:
-                node_path = os.path.join(root, node_exe)
-                break
-
-        if not node_path:
-            raise FileNotFoundError("Node.js binary could not be located after extraction.")
-
-        npm_path = self._find_npm_path(embedded_dir)
-        if not npm_path:
-            raise FileNotFoundError("Could not locate npm. It may not have been extracted properly.")
-
-        return node_path, npm_path
+        return node_path
 
     def _find_npm_path(self, base_dir):
         for root, _, files in os.walk(base_dir):

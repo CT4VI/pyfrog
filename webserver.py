@@ -344,18 +344,25 @@ class WebServer:
         return None
 
     def _get_npm_path(self, node_path):
-        base_dir = os.path.dirname(node_path)
-        candidates = [
-            os.path.join(base_dir, "npm"),
-            os.path.join(base_dir, "npm.cmd"),
-            os.path.join(base_dir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-            os.path.join(base_dir, "..", "node_modules", "npm", "bin", "npm.cmd"),
+        """
+        Attempt to locate the npm executable or npm-cli.js after Node.js extraction.
+        Returns the full path to an npm executable suitable for subprocess use.
+        """
+        base_dir = os.path.dirname(os.path.dirname(node_path))  # e.g. .../embedded_node/
+
+        potential_names = [
+            "npm",  # Unix
+            "npm.cmd",  # Windows
+            "npm-cli.js",  # Node.js internal entry
         ]
 
-        for path in candidates:
-            if os.path.exists(path):
-                print("[INFO] npm located at " + path)
-                return path
+        # Search within the extracted directory
+        for root, dirs, files in os.walk(base_dir):
+            for name in potential_names:
+                if name in files:
+                    path = os.path.join(root, name)
+                    if os.access(path, os.X_OK) or name.endswith((".js", ".cmd")):
+                        return path
 
         raise FileNotFoundError("Could not locate npm. It may not have been extracted properly.")
 

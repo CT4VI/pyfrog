@@ -405,14 +405,22 @@ class WebServer:
 
     def stop(self):
         self._close_mac_tunnel_windows()
-        if self._tunnel_pid:
+
+        if self._tunnel_process:
             try:
-                os.kill(self._tunnel_pid, signal.SIGTERM)
+                self._tunnel_process.terminate()
             except Exception:
                 pass
-        self._tunnel_pid = None
+            self._tunnel_process = None
+
         if CURRENT_OS == "Darwin":
             subprocess.run(["pkill", "-f", "lt.js"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif CURRENT_OS == "Windows":
+            subprocess.run(["taskkill", "/F", "/FI", "WINDOWTITLE eq tunnel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif CURRENT_OS == "Linux":
+            subprocess.run(["pkill", "-f", "lt.js"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        self._tunnel_pid = None
 
     def _start_tunnel(self):
         if hasattr(self, "_tunnel_process") and self._tunnel_process:
@@ -504,8 +512,8 @@ class WebServer:
 
     def _start_tunnel_windows(self, cmd):
         cmd_line = " ".join(f'"{c}"' for c in cmd)
-        subprocess.Popen(
-            ["cmd.exe", "/c", "start", "cmd.exe", "/k", cmd_line],
+        self._tunnel_process = subprocess.Popen(
+            ["cmd.exe", "/c", "start", "tunnel", "cmd.exe", "/k", cmd_line],
             shell=True
         )
 
@@ -513,7 +521,6 @@ class WebServer:
         import shutil
         cmd_line = " ".join(shlex.quote(c) for c in cmd)
 
-        # Check for terminal emulator
         terminal = None
         for term in ["x-terminal-emulator", "xterm", "gnome-terminal", "konsole"]:
             if shutil.which(term):
@@ -521,10 +528,9 @@ class WebServer:
                 break
 
         if terminal:
-            subprocess.Popen([terminal, "-e", cmd_line])
+            self._tunnel_process = subprocess.Popen([terminal, "-e", cmd_line])
         else:
-            # Fallback: run in background
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._tunnel_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def get_peers(self):
         self._prune_stale_peers()

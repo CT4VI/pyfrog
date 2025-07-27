@@ -338,6 +338,22 @@ class WebServer:
 
         return node_path
 
+    def _get_npm_path(self, node_path):
+        base_dir = os.path.dirname(node_path)
+        candidates = [
+            os.path.join(base_dir, "npm"),
+            os.path.join(base_dir, "npm.cmd"),
+            os.path.join(base_dir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+            os.path.join(base_dir, "..", "node_modules", "npm", "bin", "npm.cmd"),
+        ]
+
+        for path in candidates:
+            if os.path.exists(path):
+                print("[INFO] npm located at " + path)
+                return path
+
+        raise FileNotFoundError("Could not locate npm. It may not have been extracted properly.")
+
     def _get_nodejs_download_url(self):
         version = "v20.11.1"
         base_url = f"https://nodejs.org/dist/{version}/"
@@ -428,9 +444,9 @@ class WebServer:
         if CURRENT_OS == "Darwin":
             subprocess.run(["pkill", "-f", "lt.js"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif CURRENT_OS == "Windows":
-            subprocess.run(["taskkill", "/F", "/FI", "WINDOWTITLE eq tunnel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["taskkill", "/FI", f'WINDOWTITLE eq PyFrogTunnel-{self.subdomain}*'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif CURRENT_OS == "Linux":
-            subprocess.run(["pkill", "-f", "lt.js"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-f", "PyFrogTunnel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         self._tunnel_pid = None
 
@@ -469,7 +485,7 @@ class WebServer:
         lt_dir = os.path.join(self._base_path, "localtunnel")
         os.makedirs(lt_dir, exist_ok=True)
 
-        npm_path = os.path.join(os.path.dirname(node_path), "npm")
+        npm_path = self._get_npm_path(node_path)
         package_json = os.path.join(lt_dir, "package.json")
 
         if not os.path.exists(package_json):
@@ -523,16 +539,16 @@ class WebServer:
         subprocess.run(["osascript", "-e", applescript])
 
     def _start_tunnel_windows(self, cmd):
+        tag = f"PyFrogTunnel-{self.subdomain}"
         cmd_line = " ".join(f'"{c}"' for c in cmd)
-        self._tunnel_process = subprocess.Popen(
-            ["cmd.exe", "/c", "start", "tunnel", "cmd.exe", "/k", cmd_line],
+        subprocess.Popen(
+            ["cmd.exe", "/c", f'start "{tag}" cmd.exe /k {cmd_line}'],
             shell=True
         )
 
     def _start_tunnel_linux(self, cmd):
         import shutil
         cmd_line = " ".join(shlex.quote(c) for c in cmd)
-
         terminal = None
         for term in ["x-terminal-emulator", "xterm", "gnome-terminal", "konsole"]:
             if shutil.which(term):
@@ -540,9 +556,9 @@ class WebServer:
                 break
 
         if terminal:
-            self._tunnel_process = subprocess.Popen([terminal, "-e", cmd_line])
+            subprocess.Popen([terminal, "-e", f"bash -c 'echo PyFrogTunnel && {cmd_line}'"])
         else:
-            self._tunnel_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def get_peers(self):
         self._prune_stale_peers()

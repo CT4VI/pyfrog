@@ -299,26 +299,32 @@ class WebServer:
                     f.write(chunk)
 
     def _ensure_node_available(self):
-        import tarfile, zipfile
-
+        import tarfile, zipfile, urllib.request
         embedded_dir = os.path.join(self._base_path, "embedded_node")
-        node_bin_dir = os.path.join(embedded_dir, "bin")
-        node_exe = "node.exe" if CURRENT_OS == "Windows" else "node"
-        node_path = os.path.join(node_bin_dir, node_exe)
+        node_path = None
 
-        if os.path.exists(node_path):
-            return node_path
+        if CURRENT_OS == "Windows":
+            node_exe = "node.exe"
+        else:
+            node_exe = "node"
+
+        # Skip if node already extracted
+        for root, _, files in os.walk(embedded_dir):
+            if node_exe in files:
+                node_path = os.path.join(root, node_exe)
+                break
+
+        if node_path:
+            npm_path = self._find_npm_path(embedded_dir)
+            return node_path, npm_path
 
         print("[INFO] Node.js not found, downloading...")
         os.makedirs(embedded_dir, exist_ok=True)
 
         url = self._get_nodejs_download_url()
-        archive_ext = ".zip" if url.endswith(".zip") else ".tar.gz"
-        archive_path = os.path.join(self._base_path, f"node{archive_ext}")
+        archive_path = os.path.join(self._base_path, "node_archive")
 
-        import requests
-        import certifi
-
+        import requests, certifi
         print(f"[INFO] Downloading Node.js from {url}")
         with requests.get(url, stream=True, verify=certifi.where()) as res:
             res.raise_for_status()
@@ -327,16 +333,38 @@ class WebServer:
                     f.write(chunk)
 
         print("[INFO] Extracting Node.js...")
-        if archive_ext == ".zip":
+        if archive_path.endswith(".zip"):
             with zipfile.ZipFile(archive_path, "r") as zip_ref:
-                zip_ref.extractall(path=embedded_dir)
+                zip_ref.extractall(embedded_dir)
         else:
             with tarfile.open(archive_path, "r:gz") as tar:
                 tar.extractall(path=embedded_dir, members=self._strip_components(tar, 1))
-
         os.remove(archive_path)
 
-        return node_path
+        # Re-locate node and npm
+        node_path = None
+        for root, _, files in os.walk(embedded_dir):
+            if node_exe in files:
+                node_path = os.path.join(root, node_exe)
+                break
+
+        if not node_path:
+            raise FileNotFoundError("Node.js binary could not be located after extraction.")
+
+        npm_path = self._find_npm_path(embedded_dir)
+        if not npm_path:
+            raise FileNotFoundError("Could not locate npm. It may not have been extracted properly.")
+
+        return node_path, npm_path
+
+    def _find_npm_path(self, base_dir):
+        for root, _, files in os.walk(base_dir):
+            for file in files:
+                if CURRENT_OS == "Windows" and file == "npm.cmd":
+                    return os.path.join(root, file)
+                elif file == "npm" and not file.endswith(".cmd"):
+                    return os.path.join(root, file)
+        return None
 
     def _get_npm_path(self, node_path):
         base_dir = os.path.dirname(node_path)
@@ -456,8 +484,8 @@ class WebServer:
 
         import subprocess
 
-        node_path = self._ensure_node_available()
-        lt_script = self._setup_localtunnel(node_path)
+        node_path, npm_path = self._ensure_node_available()
+        lt_script = self._setup_localtunnel(node_path, npm_path)
 
         cmd = [
             node_path,
@@ -478,14 +506,13 @@ class WebServer:
 
         self._tunnel_url = f"https://{self.subdomain}.loca.lt"
 
-    def _setup_localtunnel(self, node_path):
+    def _setup_localtunnel(self, node_path, npm_path):
         import os
         import subprocess
 
         lt_dir = os.path.join(self._base_path, "localtunnel")
         os.makedirs(lt_dir, exist_ok=True)
 
-        npm_path = self._get_npm_path(node_path)
         package_json = os.path.join(lt_dir, "package.json")
 
         if not os.path.exists(package_json):
@@ -497,9 +524,15 @@ class WebServer:
             print("[INFO] Installing localtunnel...")
             subprocess.run([node_path, npm_path, "install", "localtunnel"], cwd=lt_dir)
 
+        # Default to lt.js
         lt_bin = os.path.join(lt_module, "bin", "lt.js")
+
+        # Use lt.cmd on Windows if it exists
         if CURRENT_OS == "Windows":
-            lt_bin = os.path.join(lt_module, "bin", "lt.cmd")  # fallback or adjustment if needed
+            lt_cmd = os.path.join(lt_module, "bin", "lt.cmd")
+            if os.path.exists(lt_cmd):
+                lt_bin = lt_cmd
+
         return lt_bin
 
     def _close_mac_tunnel_windows(self):

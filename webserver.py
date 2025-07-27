@@ -331,7 +331,8 @@ class WebServer:
 
         os.remove(archive_path)
 
-        return node_path
+        npm_path = self._get_npm_path(node_path)
+        return node_path, npm_path
 
     def _find_npm_path(self, base_dir):
         for root, _, files in os.walk(base_dir):

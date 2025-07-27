@@ -444,7 +444,8 @@ class WebServer:
             self.stop()
 
     def stop(self):
-        self._close_mac_tunnel_windows()
+        if CURRENT_OS == "Darwin":
+            self._close_mac_tunnel_windows()
 
         if self._tunnel_process:
             try:
@@ -501,12 +502,12 @@ class WebServer:
 
         if not os.path.exists(package_json):
             print("[INFO] Initializing localtunnel directory...")
-            subprocess.run([node_path, npm_path, "init", "-y"], cwd=lt_dir)
+            subprocess.run([npm_path, "init", "-y"], cwd=lt_dir)
 
         lt_module = os.path.join(lt_dir, "node_modules", "localtunnel")
         if not os.path.exists(lt_module):
             print("[INFO] Installing localtunnel...")
-            subprocess.run([node_path, npm_path, "install", "localtunnel"], cwd=lt_dir)
+            subprocess.run([npm_path, "install", "localtunnel"], cwd=lt_dir)
 
         # Default to lt.js
         lt_bin = os.path.join(lt_module, "bin", "lt.js")

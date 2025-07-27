@@ -1,4 +1,4 @@
-from PyFrog import WebServer
+from pyfrog import WebServer
 
 server = WebServer(port=8081, subdomain="migrationtest", migrate_host=True, auto_hold=False)
 

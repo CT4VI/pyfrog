@@ -273,11 +273,20 @@ class WebServer:
         return result
 
     def _ensure_certificates(self):
+        try:
+            import certifi
+            os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+            ssl._create_default_https_context = ssl_context
+        except Exception as e:
+            print(f"[WARNING] Could not enforce certifi SSL context: {e}")
+
+        # Optional macOS fix (for system installs only)
         if CURRENT_OS == "Darwin":
             cert_script = "/Applications/Python 3.12/Install Certificates.command"
             if os.path.exists(cert_script):
                 subprocess.run(["open", cert_script])
-                time.sleep(2)  # Give it a second to complete
+                time.sleep(2)
 
     def _download_with_cert_bundle(self, url, output_path):
         import requests
@@ -290,10 +299,12 @@ class WebServer:
                     f.write(chunk)
 
     def _ensure_node_available(self):
-        import tarfile, urllib.request, os
+        import tarfile, zipfile
 
         embedded_dir = os.path.join(self._base_path, "embedded_node")
-        node_path = os.path.join(embedded_dir, "bin", "node")
+        node_bin_dir = os.path.join(embedded_dir, "bin")
+        node_exe = "node.exe" if CURRENT_OS == "Windows" else "node"
+        node_path = os.path.join(node_bin_dir, node_exe)
 
         if os.path.exists(node_path):
             return node_path
@@ -302,7 +313,8 @@ class WebServer:
         os.makedirs(embedded_dir, exist_ok=True)
 
         url = self._get_nodejs_download_url()
-        archive_path = os.path.join(self._base_path, "node.tar.gz")
+        archive_ext = ".zip" if url.endswith(".zip") else ".tar.gz"
+        archive_path = os.path.join(self._base_path, f"node{archive_ext}")
 
         import requests
         import certifi
@@ -315,13 +327,13 @@ class WebServer:
                     f.write(chunk)
 
         print("[INFO] Extracting Node.js...")
-        if archive_path.endswith(".zip"):
-            import zipfile
+        if archive_ext == ".zip":
             with zipfile.ZipFile(archive_path, "r") as zip_ref:
                 zip_ref.extractall(path=embedded_dir)
         else:
             with tarfile.open(archive_path, "r:gz") as tar:
                 tar.extractall(path=embedded_dir, members=self._strip_components(tar, 1))
+
         os.remove(archive_path)
 
         return node_path
